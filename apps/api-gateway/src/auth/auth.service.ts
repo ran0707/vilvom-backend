@@ -4,6 +4,8 @@ import {
   UnauthorizedException,
   NotFoundException,
   BadRequestException,
+  InternalServerErrorException,
+  Logger,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -15,6 +17,8 @@ import { ADMIN_PHONES } from '../admin/admin.config';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     @InjectModel(User.name) private userModel: Model<UserDocument>,
     private jwtService: JwtService,
@@ -46,28 +50,37 @@ export class AuthService {
       throw new UnauthorizedException('Invalid or expired OTP');
     }
 
-    let user = await this.userModel.findOne({ phoneNumber: normalizedPhone });
+    let user: any;
+    try {
+      user = await this.userModel.findOne({ phoneNumber: normalizedPhone });
+    } catch (err) {
+      this.logger.error('MongoDB findOne failed during verifyOtp', err?.message);
+      throw new InternalServerErrorException('Database connection error. Please check server configuration.');
+    }
 
-    if (!user) {
-      // Create new user — use provided name or fall back to last-4-digits placeholder
-      user = new this.userModel({
-        phoneNumber: normalizedPhone,
-        name: name?.trim() || `User-${normalizedPhone.slice(-4)}`,
-        isPhoneVerified: true,
-        deviceInfo,
-        isDeviceBound: true,
-      });
-      await user.save();
-    } else {
-      // Update existing user
-      user.isPhoneVerified = true;
-      user.lastLogin = new Date();
-      if (name?.trim()) user.name = name.trim();
-      if (deviceInfo) {
-        user.deviceInfo = deviceInfo;
-        user.isDeviceBound = true;
+    try {
+      if (!user) {
+        user = new this.userModel({
+          phoneNumber: normalizedPhone,
+          name: name?.trim() || `User-${normalizedPhone.slice(-4)}`,
+          isPhoneVerified: true,
+          deviceInfo,
+          isDeviceBound: true,
+        });
+        await user.save();
+      } else {
+        user.isPhoneVerified = true;
+        user.lastLogin = new Date();
+        if (name?.trim()) user.name = name.trim();
+        if (deviceInfo) {
+          user.deviceInfo = deviceInfo;
+          user.isDeviceBound = true;
+        }
+        await user.save();
       }
-      await user.save();
+    } catch (err) {
+      this.logger.error('MongoDB save failed during verifyOtp', err?.message);
+      throw new InternalServerErrorException('Failed to save user. Check database connection and schema.');
     }
 
     // Generate JWT token — include role so guards can check it
